@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#F4F3EF" />
+<title>モヤマル・コンパス かんたん版</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23F4F3EF'/%3E%3Ccircle cx='50' cy='50' r='28' fill='none' stroke='%239C8BAB' stroke-width='6'/%3E%3C/svg%3E" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #F4F3EF; }
+  * { -webkit-tap-highlight-color: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+// 本体とは別のキーで保存(記録は独立)
+const STORAGE_KEY = "moyamaru-simple-entries-v1";
+const CUSTOM_KEY = "moyamaru-simple-custom-v1";
+window.storage = {
+  async get(key) { const v = localStorage.getItem(key); return v === null ? null : { value: v }; },
+  async set(key, val) { localStorage.setItem(key, val); return { value: val }; },
+};
+
+// ---------- パレット ----------
+const C = {
+  bg: "#F4F3EF", card: "#FCFBF8", ink: "#4C4A52", inkSoft: "#8B8893", line: "#E7E4DC",
+  plum: "#9C8BAB", plumSoft: "#EFEAF3", gold: "#C9A05E", goldSoft: "#F6EEDF",
+  sage: "#8FAE9B", sageSoft: "#E9F0EB", blue: "#8C9EB8", blueSoft: "#EAEEF4",
+};
+
+// あるある10個ずつ
+const EMOTIONS = ["もやもや", "ざわざわ", "ぐったり", "いらいら", "ふあん", "かなしい", "あせり", "ほっ", "おだやか", "うれしい"];
+const SCENES = ["仕事", "人間関係", "家庭", "通勤", "SNS", "会議", "ひとり時間", "朝の支度", "寝る前", "体調"];
+const TIMES = ["朝", "昼", "夕方", "夜"];
+const DAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+// ---------- ユーティリティ ----------
+const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const guessTime = () => { const h = new Date().getHours(); if (h>=4&&h<10) return "朝"; if (h>=10&&h<16) return "昼"; if (h>=16&&h<19) return "夕方"; return "夜"; };
+const dayOfWeek = (s) => DAYS[new Date(s + "T12:00:00").getDay()];
+const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate()-n); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+
+// ---------- 渦 → ○ SVG ----------
+function SpiralToCircle({ value, size = 120, color = C.plum, animate = true }) {
+  const turns = 0.9 + (value/100)*2.6;
+  const pts = []; const steps = 180; const cx = size/2, cy = size/2; const maxR = size/2 - 8;
+  const innerRatio = 1 - value/100;
+  for (let i=0;i<=steps;i++){ const t=i/steps; const a=t*turns*Math.PI*2-Math.PI/2; const r=maxR*(innerRatio+(1-innerRatio)*t); pts.push(`${cx+r*Math.cos(a)},${cy+r*Math.sin(a)}`); }
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+      <polyline points={pts.join(" ")} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" opacity="0.85" style={animate?{transition:"all 0.6s ease"}:undefined} />
+    </svg>
+  );
+}
+
+// ---------- バッテリーSVG ----------
+function Battery({ value, width = 64 }) {
+  const h = 28; const fillW = Math.max(2, ((width-10)*value)/100);
+  const color = value>=60?C.sage:value>=30?C.gold:C.plum;
+  return (
+    <svg width={width+6} height={h} viewBox={`0 0 ${width+6} ${h}`} aria-label={`バッテリー${value}%`}>
+      <rect x="1" y="3" width={width-2} height={h-6} rx="7" fill="none" stroke={C.line} strokeWidth="2" />
+      <rect x={width} y={h/2-5} width="5" height="10" rx="2.5" fill={C.line} />
+      <rect x="4" y="6" width={fillW} height={h-12} rx="5" fill={color} opacity="0.75" style={{transition:"width 0.4s ease"}} />
+    </svg>
+  );
+}
+
+// ---------- チップ ----------
+function Chip({ label, active, onClick, tone = "plum", small }) {
+  const tones = { plum:{on:C.plum,onBg:C.plumSoft}, gold:{on:C.gold,onBg:C.goldSoft}, blue:{on:C.blue,onBg:C.blueSoft}, sage:{on:C.sage,onBg:C.sageSoft} };
+  const t = tones[tone];
+  return (
+    <button onClick={onClick} style={{ padding: small?"4px 10px":"7px 14px", borderRadius:999, fontSize: small?12:13.5, border:`1.5px solid ${active?t.on:C.line}`, background: active?t.onBg:"transparent", color: active?C.ink:C.inkSoft, cursor:"pointer", transition:"all 0.18s ease", fontFamily:"inherit", lineHeight:1.4 }}>
+      {label}
+    </button>
+  );
+}
+
+const inputStyle = { flex:1, padding:"10px 14px", borderRadius:14, border:`1.5px solid ${C.line}`, background:"#fff", color:C.ink, fontSize:14, outline:"none", fontFamily:"inherit", minWidth:0 };
+const miniBtnStyle = { padding:"8px 16px", borderRadius:14, border:`1.5px solid ${C.line}`, background:C.card, color:C.inkSoft, fontSize:13, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" };
+
+// ---------- プリセット+じぶんの言葉チップ ----------
+function CustomChipGroup({ presets, customs, selected, onToggle, onAdd, onRemove, tone, placeholder }) {
+  const [text, setText] = useState("");
+  const [editing, setEditing] = useState(false);
+  const add = () => { const v=text.trim(); if(!v) return; if(!presets.includes(v)&&!customs.includes(v)) onAdd(v); if(!selected.includes(v)) onToggle(v); setText(""); };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        {presets.map((p)=>(<Chip key={p} label={p} active={selected.includes(p)} onClick={()=>onToggle(p)} tone={tone} />))}
+        {customs.map((c)=> editing
+          ? <Chip key={c} label={`${c} ×`} active tone={tone} onClick={()=>onRemove(c)} />
+          : <Chip key={c} label={c} active={selected.includes(c)} onClick={()=>onToggle(c)} tone={tone} />
+        )}
+      </div>
+      <div className="flex gap-2 mt-2">
+        <input value={text} onChange={(e)=>setText(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"){e.preventDefault();add();}}} placeholder={placeholder} style={inputStyle} />
+        <button onClick={add} style={miniBtnStyle}>追加</button>
+        {customs.length>0 && <button onClick={()=>setEditing(!editing)} style={{...miniBtnStyle, color: editing?C.ink:C.inkSoft}}>{editing?"完了":"整理"}</button>}
+      </div>
+      {editing && <div style={{fontSize:11.5,color:C.inkSoft,marginTop:6}}>×つきの言葉をタップすると、選択肢から外れます(過去の記録は残ります)</div>}
+    </div>
+  );
+}
+
+// ---------- 自由入力チップ(きっかけ用) ----------
+function TagInput({ tags, setTags, placeholder, tone = "gold" }) {
+  const [text, setText] = useState("");
+  const add = () => { const v=text.trim(); if(v&&!tags.includes(v)) setTags([...tags,v]); setText(""); };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {tags.map((t)=>(<Chip key={t} label={`${t} ×`} active tone={tone} small onClick={()=>setTags(tags.filter((x)=>x!==t))} />))}
+      </div>
+      <div className="flex gap-2">
+        <input value={text} onChange={(e)=>setText(e.target.value)} onKeyDown={(e)=>{if(e.key==="Enter"){e.preventDefault();add();}}} placeholder={placeholder} style={inputStyle} />
+        <button onClick={add} style={miniBtnStyle}>追加</button>
+      </div>
+    </div>
+  );
+}
+
+function SoftSlider({ value, onChange, color }) {
+  return <input type="range" min="0" max="100" value={value} onChange={(e)=>onChange(Number(e.target.value))} style={{ width:"100%", accentColor:color, height:28, cursor:"pointer" }} />;
+}
+
+function Label({ children, hint }) {
+  return (<div className="mb-2 mt-5"><span style={{fontSize:14,fontWeight:600,color:C.ink}}>{children}</span>{hint && <span style={{fontSize:12,color:C.inkSoft,marginLeft:8}}>{hint}</span>}</div>);
+}
+
+function Card({ children, title, sub, accent }) {
+  return (
+    <div style={{ background:C.card, borderRadius:22, padding:"20px 20px 22px", border:`1px solid ${C.line}`, boxShadow:"0 2px 10px rgba(76,74,82,0.04)" }}>
+      {title && (<div className="mb-3"><div className="flex items-center gap-2">{accent && <span style={{width:8,height:8,borderRadius:99,background:accent,display:"inline-block"}} />}<span style={{fontSize:15,fontWeight:700,color:C.ink}}>{title}</span></div>{sub && <div style={{fontSize:12,color:C.inkSoft,marginTop:3}}>{sub}</div>}</div>)}
+      {children}
+    </div>
+  );
+}
+
+function Modal({ children, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(76,74,82,0.32)", display:"flex", alignItems:"center", justifyContent:"center", padding:20, zIndex:50 }}>
+      <div onClick={(e)=>e.stopPropagation()} style={{ background:C.card, borderRadius:22, padding:"22px 22px 20px", width:"100%", maxWidth:340, border:`1px solid ${C.line}`, boxShadow:"0 10px 40px rgba(76,74,82,0.18)" }}>{children}</div>
+    </div>
+  );
+}
+const modalBtn = (filled, color) => ({ flex:1, padding:"11px", borderRadius:14, border: filled?"none":`1.5px solid ${C.line}`, background: filled?color:"transparent", color: filled?"#fff":C.inkSoft, fontSize:14, fontWeight: filled?700:500, cursor:"pointer", fontFamily:"inherit" });
+
+// ============================================================
+function MoyamaruSimple() {
+  const [tab, setTab] = useState("record");
+  const [entries, setEntries] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [range, setRange] = useState("month"); // week | month | all
+  const [monthCursor, setMonthCursor] = useState(todayStr().slice(0,7));
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
+
+  const blank = () => ({ date: todayStr(), timeOfDay: guessTime(), emotions: [], scenes: [], guruguru: 50, battery: 50, maruTriggers: [] });
+  const [form, setForm] = useState(blank());
+  const set = (k,v) => setForm((f)=>({...f,[k]:v}));
+  const toggle = (k,v) => setForm((f)=>({...f,[k]: f[k].includes(v)?f[k].filter((x)=>x!==v):[...f[k],v]}));
+
+  const [customs, setCustoms] = useState({ emotions: [], scenes: [] });
+
+  useEffect(() => {
+    (async () => {
+      try { const res = await window.storage.get(STORAGE_KEY); if (res&&res.value){ const p = JSON.parse(res.value); setEntries(p); if(p.length){ const latest = p.reduce((a,e)=>(e.date>a?e.date:a), p[0].date); setMonthCursor(latest.slice(0,7)); } } } catch(e){}
+      try { const c = await window.storage.get(CUSTOM_KEY); if (c&&c.value){ const cc = JSON.parse(c.value); setCustoms({ emotions: cc.emotions||[], scenes: cc.scenes||[] }); } } catch(e){}
+      setLoaded(true);
+    })();
+  }, []);
+
+  const persist = async (next) => { setEntries(next); try { await window.storage.set(STORAGE_KEY, JSON.stringify(next)); } catch(e){ console.error(e); } };
+  const saveCustoms = async (next) => { setCustoms(next); try { await window.storage.set(CUSTOM_KEY, JSON.stringify(next)); } catch(e){ console.error(e); } };
+  const addCustom = (cat, v) => saveCustoms({ ...customs, [cat]: [...customs[cat], v] });
+  const removeCustom = (cat, formKey, v) => { saveCustoms({ ...customs, [cat]: customs[cat].filter((x)=>x!==v) }); setForm((f)=>({...f,[formKey]: f[formKey].filter((x)=>x!==v)})); };
+
+  const isFormEmpty = (f) => f.emotions.length===0 && f.scenes.length===0 && f.maruTriggers.length===0 && f.guruguru===50 && f.battery===50;
+
+  const doSave = async () => {
+    const entry = { ...form, id: `s-${Date.now()}` };
+    await persist([entry, ...entries]);
+    setForm(blank()); setConfirmEmpty(false);
+    setSavedFlash(true); setTimeout(()=>setSavedFlash(false), 2200);
+    setTab("dashboard");
+  };
+  const save = () => { if (isFormEmpty(form)) { setConfirmEmpty(true); return; } doSave(); };
+  const removeEntry = async (id) => { await persist(entries.filter((e)=>e.id!==id)); setDeleteTarget(null); };
+
+  // 月の移動
+  const shiftMonth = (delta) => { const [y,m] = monthCursor.split("-").map(Number); const d = new Date(y, m-1+delta, 1); setMonthCursor(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); };
+  const monthLabel = (() => { const [y,m] = monthCursor.split("-"); return `${y}年${Number(m)}月`; })();
+  const goLatestMonth = () => { if(entries.length){ const latest = entries.reduce((a,e)=>(e.date>a?e.date:a), entries[0].date); setMonthCursor(latest.slice(0,7)); } setRange("month"); };
+  const scopeLabel = range==="week"?"今週":range==="month"?monthLabel:"これまで";
+
+  const scoped = useMemo(() => {
+    if (range==="all") return entries;
+    if (range==="month") return entries.filter((e)=>e.date.startsWith(monthCursor));
+    const from = daysAgo(6); return entries.filter((e)=>e.date>=from);
+  }, [entries, range, monthCursor]);
+
+  const stats = useMemo(() => {
+    const s = scoped; if (s.length===0) return null;
+    const avgGuru = Math.round(s.reduce((a,e)=>a+e.guruguru,0)/s.length);
+    const avgBatt = Math.round(s.reduce((a,e)=>a+e.battery,0)/s.length);
+    const count = (arr) => { const m={}; arr.forEach((v)=>m[v]=(m[v]||0)+1); return Object.entries(m).sort((a,b)=>b[1]-a[1]); };
+    const emotions = count(s.flatMap((e)=>e.emotions));
+    const sceneMap = {};
+    s.forEach((e)=>e.scenes.forEach((sc)=>{ if(!sceneMap[sc]) sceneMap[sc]={sum:0,n:0}; sceneMap[sc].sum+=e.guruguru; sceneMap[sc].n+=1; }));
+    const scenes = Object.entries(sceneMap).map(([k,v])=>({name:k,avg:Math.round(v.sum/v.n),n:v.n})).sort((a,b)=>b.avg-a.avg);
+    const trigMap = {};
+    s.forEach((e)=>(e.maruTriggers||[]).forEach((t)=>{ trigMap[t]=(trigMap[t]||0)+1; }));
+    const triggers = Object.entries(trigMap).map(([k,n])=>({name:k,n})).sort((a,b)=>b.n-a.n);
+
+    let dayList = [];
+    if (range==="week") { for(let i=6;i>=0;i--) dayList.push(daysAgo(i)); }
+    else if (range==="month") { const [y,mo]=monthCursor.split("-").map(Number); const last=new Date(y,mo,0).getDate(); for(let d=1;d<=last;d++) dayList.push(`${monthCursor}-${String(d).padStart(2,"0")}`); }
+    else { dayList = [...new Set(s.map((e)=>e.date))].sort(); }
+    const trend = dayList.map((d)=>{ const day=s.filter((e)=>e.date===d); return { date:d, label: range==="month"?String(Number(d.slice(8,10))):range==="all"?d.slice(5).replace("-","/"):dayOfWeek(d), batt: day.length?Math.round(day.reduce((a,e)=>a+e.battery,0)/day.length):null, guru: day.length?Math.round(day.reduce((a,e)=>a+e.guruguru,0)/day.length):null }; });
+
+    return { avgGuru, avgBatt, emotions, scenes, triggers, trend, n: s.length };
+  }, [scoped, range, monthCursor]);
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.bg, color:C.ink, fontFamily:"'Zen Maru Gothic','Hiragino Maru Gothic ProN','Hiragino Sans','Yu Gothic',sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&display=swap');
+        @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important;} }
+      `}</style>
+
+      <div className="max-w-2xl mx-auto px-4 pb-24 pt-6">
+        <header className="text-center mb-5">
+          <div className="flex items-center justify-center gap-3">
+            <SpiralToCircle value={stats?stats.avgGuru:60} size={44} color={C.plum} />
+            <div>
+              <h1 style={{fontSize:21,fontWeight:700,letterSpacing:"0.04em"}}>モヤマル・コンパス</h1>
+              <p style={{fontSize:12,color:C.inkSoft,marginTop:2,letterSpacing:"0.12em"}}>simple</p>
+              <p style={{fontSize:12,color:C.inkSoft,marginTop:1}}>モヤモヤを、ウヤムヤにしない</p>
+            </div>
+          </div>
+        </header>
+
+        <nav className="flex justify-center gap-2 mb-6">
+          {[["record","きろく"],["dashboard","みえる化"],["history","これまで"]].map(([k,label])=>(
+            <button key={k} onClick={()=>setTab(k)} style={{ padding:"9px 22px", borderRadius:999, fontSize:14, fontWeight: tab===k?700:500, border:`1.5px solid ${tab===k?C.gold:C.line}`, background: tab===k?C.goldSoft:"transparent", color: tab===k?C.ink:C.inkSoft, cursor:"pointer", transition:"all 0.2s ease", fontFamily:"inherit" }}>{label}</button>
+          ))}
+        </nav>
+
+        {savedFlash && (<div style={{background:C.goldSoft,border:`1.5px solid ${C.gold}`,borderRadius:16,padding:"10px 16px",fontSize:13.5,textAlign:"center",marginBottom:16}}>きろくしました。外に出せたぶん、循環がはじまっています ○</div>)}
+
+        {/* ===== きろく ===== */}
+        {tab==="record" && (
+          <Card>
+            <div className="flex gap-3 items-center flex-wrap">
+              <input type="date" value={form.date} onChange={(e)=>set("date",e.target.value)} style={{...inputStyle, flex:"none", width:150}} />
+              <div className="flex gap-1.5 flex-wrap">
+                {TIMES.map((t)=>(<Chip key={t} label={t} tone="blue" active={form.timeOfDay===t} onClick={()=>set("timeOfDay",t)} small />))}
+              </div>
+            </div>
+
+            <Label hint="いくつでも">いまの感情</Label>
+            <CustomChipGroup presets={EMOTIONS} customs={customs.emotions} selected={form.emotions} onToggle={(v)=>toggle("emotions",v)} onAdd={(v)=>addCustom("emotions",v)} onRemove={(v)=>removeCustom("emotions","emotions",v)} tone="plum" placeholder="じぶんの言葉で追加" />
+
+            <Label hint="どんな場面で?">場面</Label>
+            <CustomChipGroup presets={SCENES} customs={customs.scenes} selected={form.scenes} onToggle={(v)=>toggle("scenes",v)} onAdd={(v)=>addCustom("scenes",v)} onRemove={(v)=>removeCustom("scenes","scenes",v)} tone="blue" placeholder="じぶんの言葉で追加" />
+
+            <Label>グルグル度 <span style={{color:C.plum,fontWeight:700}}>{form.guruguru}</span></Label>
+            <div className="flex items-center gap-4">
+              <div style={{flex:1}}>
+                <SoftSlider value={100-form.guruguru} onChange={(v)=>set("guruguru",100-v)} color={C.plum} />
+                <div className="flex justify-between" style={{fontSize:11,color:C.inkSoft}}><span>からまっている</span><span>ほどけている ○</span></div>
+              </div>
+              <SpiralToCircle value={form.guruguru} size={64} color={C.plum} />
+            </div>
+
+            <Label>心のバッテリー <span style={{color:C.sage,fontWeight:700}}>{form.battery}%</span></Label>
+            <div className="flex items-center gap-4">
+              <div style={{flex:1}}>
+                <SoftSlider value={form.battery} onChange={(v)=>set("battery",v)} color={C.sage} />
+                <div className="flex justify-between" style={{fontSize:11,color:C.inkSoft}}><span>からっぽ</span><span>満タン ○</span></div>
+              </div>
+              <Battery value={form.battery} width={64} />
+            </div>
+
+            <Label hint="あれば。じぶんの言葉で">少しマルになったきっかけ</Label>
+            <TagInput tags={form.maruTriggers} setTags={(v)=>set("maruTriggers",v)} placeholder="例: 歩いた、深呼吸した" tone="gold" />
+
+            <div style={{fontSize:12,color:C.inkSoft,textAlign:"center",marginTop:22,lineHeight:1.7}}>全部埋めなくても大丈夫です。今わかるところだけで記録できます。</div>
+
+            <button onClick={save} style={{ width:"100%", marginTop:10, padding:"14px", borderRadius:18, border:"none", background:C.gold, color:"#fff", fontSize:15.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.06em", boxShadow:"0 3px 12px rgba(201,160,94,0.25)" }}>外に出して、きろくする ○</button>
+          </Card>
+        )}
+
+        {/* ===== みえる化 ===== */}
+        {tab==="dashboard" && (
+          <div className="flex flex-col gap-4">
+            <div className="flex justify-center gap-2">
+              <Chip label="今週" tone="gold" active={range==="week"} onClick={()=>setRange("week")} small />
+              <Chip label="月で見る" tone="gold" active={range==="month"} onClick={goLatestMonth} small />
+              <Chip label="ぜんぶ" tone="gold" active={range==="all"} onClick={()=>setRange("all")} small />
+            </div>
+
+            {range==="month" && (
+              <div className="flex justify-center items-center gap-3">
+                <button onClick={()=>shiftMonth(-1)} style={{...miniBtnStyle, padding:"6px 14px"}} aria-label="前の月">‹</button>
+                <span style={{fontSize:15,fontWeight:700,color:C.ink,minWidth:96,textAlign:"center"}}>{monthLabel}</span>
+                <button onClick={()=>shiftMonth(1)} style={{...miniBtnStyle, padding:"6px 14px"}} aria-label="次の月">›</button>
+              </div>
+            )}
+
+            {!stats ? (
+              <Card>
+                <div className="text-center py-6">
+                  <SpiralToCircle value={60} size={90} color={C.plum} />
+                  <p style={{fontSize:14,color:C.inkSoft,marginTop:12,lineHeight:1.9}}>
+                    {range==="month" ? <>{monthLabel}には、まだ記録がありません。<br />‹ › で別の月を見てみてください。</> : <>まだ記録がありません。<br />「きろく」から始めてみてください。</>}
+                  </p>
+                </div>
+              </Card>
+            ) : (
+              <>
+                <Card>
+                  <div className="flex items-center gap-5">
+                    <SpiralToCircle value={stats.avgGuru} size={110} color={C.plum} />
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,color:C.inkSoft}}>{scopeLabel}のかたち({stats.n}件)</div>
+                      <div style={{fontSize:15,fontWeight:700,marginTop:4,lineHeight:1.8}}>グルグル度 平均 <span style={{color:C.plum}}>{stats.avgGuru}</span></div>
+                      <div className="flex items-center gap-2 mt-1"><Battery value={stats.avgBatt} width={52} /><span style={{fontSize:13,color:C.inkSoft}}>バッテリー平均 {stats.avgBatt}%</span></div>
+                    </div>
+                  </div>
+                </Card>
+
+                <Card title={`${scopeLabel}の感情傾向`} sub="大きいほど、よく顔を出した感情" accent={C.plum}>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    {stats.emotions.map(([name,n],i)=>{ const max=stats.emotions[0][1]; const scale=0.85+(n/max)*0.6; return (
+                      <span key={name} style={{ fontSize:13*scale, padding:`${6*scale}px ${14*scale}px`, borderRadius:999, background: i<3?C.plumSoft:"transparent", border:`1.5px solid ${i<3?C.plum:C.line}`, color:C.ink }}>{name} <span style={{color:C.inkSoft,fontSize:11}}>×{n}</span></span>
+                    ); })}
+                  </div>
+                </Card>
+
+                <Card title="グルグルしやすい場面" sub="バーが長いほど、からまりやすい場面" accent={C.blue}>
+                  <div className="flex flex-col gap-2.5">
+                    {stats.scenes.slice(0,8).map((s)=>(
+                      <div key={s.name} className="flex items-center gap-3">
+                        <span style={{width:78,fontSize:13,textAlign:"right",color:C.ink,flexShrink:0}}>{s.name}</span>
+                        <div style={{flex:1,height:16,background:C.blueSoft,borderRadius:99,overflow:"hidden"}}><div style={{width:`${s.avg}%`,height:"100%",background:`linear-gradient(90deg, ${C.blue}, ${C.plum})`,borderRadius:99,opacity:0.8,transition:"width 0.5s ease"}} /></div>
+                        <span style={{width:56,fontSize:11.5,color:C.inkSoft,flexShrink:0}}>{s.avg}({s.n}件)</span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                <Card title="少しマルになるきっかけ" sub="あなたを渦からほどく、あなただけの合図" accent={C.gold}>
+                  {stats.triggers.length===0 ? (
+                    <p style={{fontSize:13,color:C.inkSoft}}>まだ記録がありません。マルになった瞬間も、小さくてOKなので残してみてください。</p>
+                  ) : (
+                    <div className="flex flex-col gap-2.5">
+                      {stats.triggers.slice(0,8).map((t,i)=>{ const max=stats.triggers[0].n; return (
+                        <div key={t.name} className="flex items-center gap-3">
+                          <span style={{fontSize:16,width:24,textAlign:"center"}}>{i===0?"◎":"○"}</span>
+                          <span style={{fontSize:13.5,width:120,flexShrink:0}}>{t.name}</span>
+                          <div style={{flex:1,height:14,background:C.goldSoft,borderRadius:99,overflow:"hidden"}}><div style={{width:`${(t.n/max)*100}%`,height:"100%",background:C.gold,opacity:0.75,borderRadius:99,transition:"width 0.5s ease"}} /></div>
+                          <span style={{fontSize:11.5,color:C.inkSoft,width:30,flexShrink:0}}>×{t.n}</span>
+                        </div>
+                      ); })}
+                    </div>
+                  )}
+                </Card>
+
+                <Card title={range==="week"?"この7日間の流れ":range==="month"?`${monthLabel}の流れ`:"これまでの流れ"} sub="緑は高いほど心のバッテリーに余裕があり、紫は高いほどグルグルが強い状態です。" accent={C.sage}>
+                  {(() => {
+                    const n = stats.trend.length; const L=30, R=330;
+                    const xAt=(i)=>(n<=1?(L+R)/2:L+(i*(R-L))/(n-1)); const yAt=(v)=>110-v*0.9;
+                    const dot = n>16?2:n>10?3:4; const labelEvery = n<=10?1:Math.ceil(n/8);
+                    const segmentsFor=(key)=>{ const segs=[]; let cur=[]; stats.trend.forEach((d,i)=>{ if(d[key]===null){ if(cur.length){segs.push(cur);cur=[];} } else cur.push(`${xAt(i)},${yAt(d[key])}`); }); if(cur.length)segs.push(cur); return segs; };
+                    return (
+                      <svg viewBox="0 0 340 132" width="100%" style={{display:"block"}}>
+                        {[0,50,100].map((y)=>(<line key={y} x1={L-2} x2={R+2} y1={yAt(y)} y2={yAt(y)} stroke={C.line} strokeWidth="1" strokeDasharray="3 4" />))}
+                        {["batt","guru"].map((key)=>{ const color=key==="batt"?C.sage:C.plum; return segmentsFor(key).map((seg,si)=> seg.length>1 ? (<polyline key={`${key}-${si}`} points={seg.join(" ")} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />) : null ); })}
+                        {stats.trend.map((d,i)=>(
+                          <g key={i}>
+                            {d.batt!==null && <circle cx={xAt(i)} cy={yAt(d.batt)} r={dot} fill={C.sage} />}
+                            {d.guru!==null && <circle cx={xAt(i)} cy={yAt(d.guru)} r={dot} fill={C.plum} />}
+                            {i%labelEvery===0 && <text x={xAt(i)} y="128" fontSize="9.5" fill={C.inkSoft} textAnchor="middle">{d.label}</text>}
+                          </g>
+                        ))}
+                      </svg>
+                    );
+                  })()}
+                </Card>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ===== これまで ===== */}
+        {tab==="history" && (
+          <div className="flex flex-col gap-3">
+            {entries.length===0 ? (
+              <Card><p style={{fontSize:13.5,color:C.inkSoft,textAlign:"center",padding:"16px 0"}}>まだ記録がありません。</p></Card>
+            ) : (
+              entries.map((e)=>(
+                <Card key={e.id}>
+                  <div className="flex items-start gap-3">
+                    <SpiralToCircle value={e.guruguru} size={46} color={C.plum} animate={false} />
+                    <div style={{flex:1,minWidth:0}}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span style={{fontSize:13,fontWeight:700}}>{e.date}({dayOfWeek(e.date)}) {e.timeOfDay}</span>
+                        <Battery value={e.battery} width={42} />
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {e.emotions.map((x)=><span key={x} style={{fontSize:11.5,background:C.plumSoft,borderRadius:99,padding:"2px 9px"}}>{x}</span>)}
+                        {e.scenes.map((x)=><span key={x} style={{fontSize:11.5,background:C.blueSoft,borderRadius:99,padding:"2px 9px"}}>{x}</span>)}
+                        {(e.maruTriggers||[]).map((x)=><span key={x} style={{fontSize:11.5,background:C.goldSoft,borderRadius:99,padding:"2px 9px"}}>○ {x}</span>)}
+                      </div>
+                      <div className="flex gap-2 mt-3">
+                        <button onClick={()=>setDeleteTarget(e.id)} style={{...miniBtnStyle, padding:"5px 14px", fontSize:12.5}}>削除</button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              ))
+            )}
+          </div>
+        )}
+
+        <footer className="text-center mt-10" style={{fontSize:11.5,color:C.inkSoft,lineHeight:2}}>
+          感じることはやめない。感じた後に、整える。<br />答えは、循環の中にある ○
+        </footer>
+      </div>
+
+      {deleteTarget && (
+        <Modal onClose={()=>setDeleteTarget(null)}>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>この記録を削除しますか?</div>
+          <div style={{fontSize:12.5,color:C.inkSoft,lineHeight:1.7,marginBottom:18}}>一度削除すると元に戻せません。</div>
+          <div className="flex gap-2">
+            <button onClick={()=>setDeleteTarget(null)} style={modalBtn(false)}>キャンセル</button>
+            <button onClick={()=>removeEntry(deleteTarget)} style={modalBtn(true,C.plum)}>削除する</button>
+          </div>
+        </Modal>
+      )}
+
+      {confirmEmpty && (
+        <Modal onClose={()=>setConfirmEmpty(false)}>
+          <div style={{fontSize:15,fontWeight:700,marginBottom:8}}>まだ内容が入力されていません。</div>
+          <div style={{fontSize:12.5,color:C.inkSoft,lineHeight:1.7,marginBottom:18}}>このまま記録しますか?</div>
+          <div className="flex gap-2">
+            <button onClick={()=>setConfirmEmpty(false)} style={modalBtn(false)}>もどる</button>
+            <button onClick={doSave} style={modalBtn(true,C.gold)}>このまま記録する</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<MoyamaruSimple />);
+</script>
+</body>
+</html>

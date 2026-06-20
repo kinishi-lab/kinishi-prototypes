@@ -35,9 +35,9 @@ const C = {
   sage: "#8FAE9B", sageSoft: "#E9F0EB", blue: "#8C9EB8", blueSoft: "#EAEEF4",
 };
 
-// あるある10個ずつ
-const EMOTIONS = ["もやもや", "ざわざわ", "ぐったり", "いらいら", "ふあん", "かなしい", "あせり", "ほっ", "おだやか", "うれしい"];
-const SCENES = ["仕事", "人間関係", "家庭", "通勤", "SNS", "会議", "ひとり時間", "朝の支度", "寝る前", "体調"];
+// あるある11個ずつ
+const EMOTIONS = ["もやもや", "ざわざわ", "ぐったり", "いらいら", "ふあん", "かなしい", "あせり", "傷ついた", "ほっとした", "おだやか", "うれしい"];
+const SCENES = ["仕事", "人間関係", "家庭", "通勤・移動", "SNS・情報", "人が多い場所", "音・におい・光", "急な変更・急かされた", "ひとり時間", "寝る前", "体調"];
 const TIMES = ["朝", "昼", "夕方", "夜"];
 const DAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -164,6 +164,7 @@ function MoyamaruSimple() {
   const [monthCursor, setMonthCursor] = useState(todayStr().slice(0,7));
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const [editingId, setEditingId] = useState(null); // 編集中の記録ID(nullなら新規)
 
   const blank = () => ({ date: todayStr(), timeOfDay: guessTime(), emotions: [], scenes: [], guruguru: 50, battery: 50, maruTriggers: [] });
   const [form, setForm] = useState(blank());
@@ -188,14 +189,34 @@ function MoyamaruSimple() {
   const isFormEmpty = (f) => f.emotions.length===0 && f.scenes.length===0 && f.maruTriggers.length===0 && f.guruguru===50 && f.battery===50;
 
   const doSave = async () => {
-    const entry = { ...form, id: `s-${Date.now()}` };
-    await persist([entry, ...entries]);
-    setForm(blank()); setConfirmEmpty(false);
-    setSavedFlash(true); setTimeout(()=>setSavedFlash(false), 2200);
+    if (editingId) {
+      // 元の記録を上書き(IDと並び順を維持。新規追加しない)
+      const next = entries.map((e) => (e.id === editingId ? { ...form, id: editingId } : e));
+      await persist(next);
+    } else {
+      const entry = { ...form, id: `s-${Date.now()}` };
+      await persist([entry, ...entries]);
+    }
+    const wasEditing = !!editingId;
+    setForm(blank()); setConfirmEmpty(false); setEditingId(null);
+    setSavedFlash(wasEditing ? "edit" : "new"); setTimeout(()=>setSavedFlash(false), 2200);
     setTab("dashboard");
   };
-  const save = () => { if (isFormEmpty(form)) { setConfirmEmpty(true); return; } doSave(); };
-  const removeEntry = async (id) => { await persist(entries.filter((e)=>e.id!==id)); setDeleteTarget(null); };
+  const save = () => { if (!editingId && isFormEmpty(form)) { setConfirmEmpty(true); return; } doSave(); };
+  const removeEntry = async (id) => { await persist(entries.filter((e)=>e.id!==id)); setDeleteTarget(null); if (editingId===id) cancelEdit(); };
+
+  const startEdit = (entry) => {
+    setForm({
+      date: entry.date, timeOfDay: entry.timeOfDay,
+      emotions: entry.emotions || [], scenes: entry.scenes || [],
+      guruguru: entry.guruguru, battery: entry.battery,
+      maruTriggers: entry.maruTriggers || [],
+    });
+    setEditingId(entry.id);
+    setTab("record");
+    if (typeof window !== "undefined") window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const cancelEdit = () => { setForm(blank()); setEditingId(null); setConfirmEmpty(false); };
 
   // 月の移動
   const shiftMonth = (delta) => { const [y,m] = monthCursor.split("-").map(Number); const d = new Date(y, m-1+delta, 1); setMonthCursor(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`); };
@@ -256,11 +277,17 @@ function MoyamaruSimple() {
           ))}
         </nav>
 
-        {savedFlash && (<div style={{background:C.goldSoft,border:`1.5px solid ${C.gold}`,borderRadius:16,padding:"10px 16px",fontSize:13.5,textAlign:"center",marginBottom:16}}>きろくしました。外に出せたぶん、循環がはじまっています ○</div>)}
+        {savedFlash && (<div style={{background:C.goldSoft,border:`1.5px solid ${C.gold}`,borderRadius:16,padding:"10px 16px",fontSize:13.5,textAlign:"center",marginBottom:16}}>{savedFlash === "edit" ? "変更しました ○" : "きろくしました。外に出せたぶん、循環がはじまっています ○"}</div>)}
 
         {/* ===== きろく ===== */}
         {tab==="record" && (
           <Card>
+            {editingId && (
+              <div style={{ background:C.blueSoft, border:`1.5px solid ${C.blue}`, borderRadius:14, padding:"10px 14px", marginBottom:16, display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                <span style={{fontSize:13.5,fontWeight:700,color:C.ink}}>記録を編集中</span>
+                <button onClick={cancelEdit} style={{...miniBtnStyle, background:"#fff"}}>編集をキャンセル</button>
+              </div>
+            )}
             <div className="flex gap-3 items-center flex-wrap">
               <input type="date" value={form.date} onChange={(e)=>set("date",e.target.value)} style={{...inputStyle, flex:"none", width:150}} />
               <div className="flex gap-1.5 flex-wrap">
@@ -268,10 +295,10 @@ function MoyamaruSimple() {
               </div>
             </div>
 
-            <Label hint="いくつでも">いまの感情</Label>
+            <Label hint="いくつでも">いまの気持ち・心身の状態</Label>
             <CustomChipGroup presets={EMOTIONS} customs={customs.emotions} selected={form.emotions} onToggle={(v)=>toggle("emotions",v)} onAdd={(v)=>addCustom("emotions",v)} onRemove={(v)=>removeCustom("emotions","emotions",v)} tone="plum" placeholder="じぶんの言葉で追加" />
 
-            <Label hint="どんな場面で?">場面</Label>
+            <Label hint="何が関係していそう?">場面・きっかけ</Label>
             <CustomChipGroup presets={SCENES} customs={customs.scenes} selected={form.scenes} onToggle={(v)=>toggle("scenes",v)} onAdd={(v)=>addCustom("scenes",v)} onRemove={(v)=>removeCustom("scenes","scenes",v)} tone="blue" placeholder="じぶんの言葉で追加" />
 
             <Label>グルグル度 <span style={{color:C.plum,fontWeight:700}}>{form.guruguru}</span></Label>
@@ -297,7 +324,11 @@ function MoyamaruSimple() {
 
             <div style={{fontSize:12,color:C.inkSoft,textAlign:"center",marginTop:22,lineHeight:1.7}}>全部埋めなくても大丈夫です。今わかるところだけで記録できます。</div>
 
-            <button onClick={save} style={{ width:"100%", marginTop:10, padding:"14px", borderRadius:18, border:"none", background:C.gold, color:"#fff", fontSize:15.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.06em", boxShadow:"0 3px 12px rgba(201,160,94,0.25)" }}>外に出して、きろくする ○</button>
+            <button onClick={save} style={{ width:"100%", marginTop:10, padding:"14px", borderRadius:18, border:"none", background:C.gold, color:"#fff", fontSize:15.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit", letterSpacing:"0.06em", boxShadow:"0 3px 12px rgba(201,160,94,0.25)" }}>{editingId ? "変更を保存する ○" : "外に出して、きろくする ○"}</button>
+
+            {editingId && (
+              <button onClick={cancelEdit} style={{ width:"100%", marginTop:10, padding:"11px", borderRadius:14, border:`1.5px solid ${C.line}`, background:"transparent", color:C.inkSoft, fontSize:13.5, cursor:"pointer", fontFamily:"inherit" }}>編集をキャンセル</button>
+            )}
           </Card>
         )}
 
@@ -424,6 +455,7 @@ function MoyamaruSimple() {
                         {(e.maruTriggers||[]).map((x)=><span key={x} style={{fontSize:11.5,background:C.goldSoft,borderRadius:99,padding:"2px 9px"}}>○ {x}</span>)}
                       </div>
                       <div className="flex gap-2 mt-3">
+                        <button onClick={()=>startEdit(e)} style={{...miniBtnStyle, padding:"5px 16px", fontSize:12.5, background:C.goldSoft, borderColor:C.gold, color:C.ink, fontWeight:700}}>編集</button>
                         <button onClick={()=>setDeleteTarget(e.id)} style={{...miniBtnStyle, padding:"5px 14px", fontSize:12.5}}>削除</button>
                       </div>
                     </div>
